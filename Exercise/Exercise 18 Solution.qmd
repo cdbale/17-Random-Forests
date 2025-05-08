@@ -1,0 +1,127 @@
+---
+title: "Exercise 18"
+author: "Marc Dotson"
+format: docx
+---
+
+Return to the previous exercise.
+
+1. Try and improve on the predictive fit by using a random forest.
+2. After fitting a random forest, use cross-validation and hyperparameter tuning on the random forest. Finalize the best-fitting model and compute predictive fit. Have you improved on the best-fitting model?
+3. Render the Quarto document into Word and upload to Canvas.
+
+**Five points total, one point each for:**
+
+- **Fitting one or more random forests on the same data as the previous exercise.**
+- **Using cross-validation.**
+- **Using hyperparameter tuning for the random forest.**
+- **Discuss whether or not they've been able to improve predictive fit.**
+- **Submitting a rendered Word document.**
+
+## Data Prep and Feature Engineering
+
+We are encoding `segment` as two categories and using the same predictors as before.
+
+```{r}
+# Load packages.
+library(tidyverse)
+library(tidymodels)
+
+# Set the randomization seed.
+set.seed(42)
+
+# Import data and wrangle S1 into segment.
+roomba_survey <- read_csv(here::here("Data", "roomba_survey.csv")) |> 
+  rename(segment = S1) |> 
+  mutate(
+    segment = case_when(
+      segment == 1 ~ "own or shopping",
+      segment == 3 ~ "own or shopping",
+      segment == 4 ~ "considering"
+    ),
+    segment = factor(segment)
+  )
+
+# Split data based on segment.
+roomba_split <- initial_split(roomba_survey, prop = 0.75, strata = segment)
+
+# Feature engineering.
+roomba_recipe <- training(roomba_split) |>
+  recipe(
+    segment ~ CleaningAttitudes_1 + CleaningAttitudes_2 + CleaningAttitudes_3 + 
+      CleaningAttitudes_4 + CleaningAttitudes_5 + CleaningAttitudes_6 + 
+      CleaningAttitudes_7 + CleaningAttitudes_8 + CleaningAttitudes_9 + 
+      CleaningAttitudes_10 + CleaningAttitudes_11 +
+      D1Gender + D2HomeType + D3Neighborhood + D4MaritalStatus
+  ) |>
+  step_dummy(all_nominal(), -all_outcomes())
+```
+
+## Random Forest
+
+Let's create a workflow for random then update it for subsequent models.
+
+```{r}
+# Random forest.
+roomba_rf <- rand_forest() |> 
+  set_engine(engine = "randomForest") |> 
+  set_mode("classification")
+
+# Create a workflow for lr.
+roomba_wf_rf <- workflow() |> 
+  add_recipe(roomba_recipe) |> 
+  add_model(roomba_rf)
+
+# Fit the model.
+fit_wf_rf <- fit(roomba_wf_rf, data = training(roomba_split))
+
+# Compute model accuracy.
+fit_wf_rf |> 
+  predict(new_data = testing(roomba_split)) |>
+  bind_cols(testing(roomba_split)) |>
+  accuracy(truth = segment, estimate = .pred_class)
+```
+
+The logistic regression and decision tree previously had a tied predictive fit accuracy of `0.711`. Without any hyperparameter tuning, the random forest already has an improved predictive fit accuracy of `0.726`.
+
+## Hyperparameter Tuning
+
+Let's see if we can improve the prediction by tuning the random forest hyperparameters.
+
+```{r}
+# Use v-fold cross-validation based on segment.
+roomba_cv <- vfold_cv(training(roomba_split), v = 10, strata = segment)
+
+# Random forest with hyperparameters to tune.
+roomba_rf_tune <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) |> 
+  set_engine(engine = "randomForest") |> 
+  set_mode("classification")
+
+# Update the workflow.
+roomba_wf_rf <- roomba_wf_rf |> 
+  update_model(roomba_rf_tune)
+
+# Tune the hyperparameters by using the cross-validation.
+fit_wf_rf <- roomba_wf_rf |> 
+  tune_grid(resamples = roomba_cv)
+
+# Select the best fitting model.
+rf_best_fit <- fit_wf_rf |> 
+  select_best(metric = "accuracy")
+
+# Finalize the workflow.
+roomba_wf_rf <- roomba_wf_rf |> 
+  finalize_workflow(rf_best_fit)
+
+# Fit the tuned workflow to the whole dataset.
+fit_wf_rf <- fit(roomba_wf_rf, data = training(roomba_split))
+
+# Compute model accuracy.
+fit_wf_rf |> 
+  predict(new_data = testing(roomba_split)) |>
+  bind_cols(testing(roomba_split)) |>
+  accuracy(truth = segment, estimate = .pred_class)
+```
+
+By tuning the hyperparameters, we only get a predictive fit accuracy of `0.690`. It looks like the defaults for the hyperparameters are sufficient for the best predictive fit.
+
